@@ -1,0 +1,57 @@
+/* Step 0: Import from Excel file */
+proc import datafile="close_prices.xlsx" out=close_prices replace dbms=xlsx;
+run;
+
+/* Step 1: Calculate Monthly Log Returns */
+data returns;
+    set close_prices;
+    retain prev_TSLA prev_AAPL;
+    if _N_ = 1 then do;
+        prev_TSLA = .;
+        prev_AAPL = .;
+        return;
+    end;
+    ret_TSLA = log(TSLA/prev_TSLA);
+    ret_AAPL = log(AAPL/prev_AAPL);
+    output;
+    prev_TSLA = TSLA;
+    prev_AAPL = AAPL;
+run;
+
+/* Step 2: Calculate Means, Std Devs, and Covariance */
+proc means data=returns noprint;
+    var ret_TSLA ret_AAPL;
+    output out=stats mean=mean_TSLA mean_AAPL std=std_TSLA std_AAPL;
+run;
+
+proc corr data=returns noprint cov outp=covmat(where=(_TYPE_='COV'));
+    var ret_TSLA ret_AAPL;
+run;
+
+/* Step 3: Compute Extended Efficient Frontier Data Points */
+data frontier;
+    if _N_ = 1 then set stats;
+    if _N_ = 1 then set covmat(keep=ret_TSLA ret_AAPL rename=(ret_TSLA=cov_TSLA_TSLA ret_AAPL=cov_TSLA_AAPL));
+    if _N_ = 1 then set covmat(firstobs=2 keep=ret_AAPL rename=(ret_AAPL=cov_AAPL_AAPL));
+    /* Use 21 weights: -1.0, -0.9, ..., 0, ..., 1.0, ..., 2.0 */
+    do j = 0 to 20;
+        weight_TSLA = -1 + 0.15 * j; /* from -1 to +2 in steps of 0.15 */
+        weight_AAPL = 1 - weight_TSLA;
+        port_mean = weight_TSLA*mean_TSLA + weight_AAPL*mean_AAPL;
+        port_var = weight_TSLA**2 * cov_TSLA_TSLA +
+                   2*weight_TSLA*weight_AAPL*cov_TSLA_AAPL +
+                   weight_AAPL**2 * cov_AAPL_AAPL;
+        port_std = sqrt(port_var);
+        output;
+    end;
+    keep weight_TSLA weight_AAPL port_mean port_std;
+run;
+
+/* Step 4: Plot the Full Efficient Frontier */
+proc sgplot data=frontier;
+    series x=port_std y=port_mean / lineattrs=(color=blue thickness=2);
+    scatter x=port_std y=port_mean / markerattrs=(symbol=circlefilled color=blue size=8);
+    xaxis label='Portfolio Standard Deviation';
+    yaxis label='Expected Return';
+    title "Full Efficient Frontier: TSLA & AAPL Portfolio (Including Short Sales)";
+run;
